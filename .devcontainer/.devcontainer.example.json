@@ -1,0 +1,41 @@
+{
+    "name": "Snaking Dev Container",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "args": {
+            // Add proxy here if needed
+            // "HTTP_PROXY": "http://host.docker.internal:your_proxy_port",
+            // "HTTPS_PROXY": "http://host.docker.internal:your_proxy_port",
+            // "NO_PROXY": "localhost,127.0.0.1,::1,host.docker.internal",
+
+            // Add your git config here
+            // "GIT_USER_NAME": "Your Name",
+            // "GIT_USER_EMAIL": "Your Email"
+        }
+    },
+    "runArgs": [
+        "--network=your-local-minio-network-name"
+    ],
+    "containerEnv": {
+        // Add proxy here if needed
+        // "HTTP_PROXY": "http://host.docker.internal:your_proxy_port",
+        // "HTTPS_PROXY": "http://host.docker.internal:your_proxy_port",
+        // Add your local MinIO container name to NO_PROXY if use proxies
+        // "NO_PROXY": "localhost,127.0.0.1,::1,host.docker.internal, your-local-minio-container-name"
+    },
+    "forwardPorts": [8080],
+    "customizations": {
+        "vscode": {
+            "settings": {
+                // Add proxy settings here if use proxies
+                // "http.proxy": "http://host.docker.internal:your_proxy_port",
+                // "http.useLocalProxyConfiguration": false
+            },
+            "extensions": [
+                "golang.go",
+                "formulahendry.code-runner"
+            ]
+        }
+    },
+    "remoteUser": "root"
+}

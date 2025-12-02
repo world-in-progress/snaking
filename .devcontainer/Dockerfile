@@ -27,3 +27,8 @@ RUN git config --global http.proxy ${HTTP_PROXY} && \
     git config --global https.proxy ${HTTPS_PROXY} && \
     git config --global user.name "${GIT_USER_NAME}" && \
     git config --global user.email "${GIT_USER_EMAIL}"
+
+# Install Go tools
+RUN go install -v golang.org/x/tools/gopls@latest && \
+    go install -v github.com/go-delve/delve/cmd/dlv@latest && \
+    go install -v honnef.co/go/tools/cmd/staticcheck@latest

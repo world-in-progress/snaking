@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"snaking/internal"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -13,8 +14,25 @@ func main() {
 	fmt.Println("Hello, Snaking!")
 
 	// Execute the MinIO interaction test
-	if err := interactWithMinio(); err != nil {
-		log.Printf("Error interacting with MinIO: %v", err)
+	// if err := interactWithMinio(); err != nil {
+	// 	log.Printf("Error interacting with MinIO: %v", err)
+	// }
+
+	tryToLoad()
+}
+
+func tryToLoad() {
+	ctx := context.Background()
+	config := internal.MinIOConfig{
+		Endpoint:        "local-minio:9000",
+		AccessKeyID:     "minioadmin",
+		SecretAccessKey: "minioadmin",
+		UseSSL:          false,
+		BucketName:      "snaking",
+	}
+	objectName := "earth.jpg"
+	if _, err := internal.DownloadFromMinIO(ctx, config, objectName); err != nil {
+		log.Printf("Error downloading from MinIO: %v", err)
 	}
 }
 
@@ -56,7 +74,7 @@ func interactWithMinio() error {
 	}
 
 	if !exists {
-		// Create the bucker
+		// Create the bucket
 		err = minioClient.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
 		if err != nil {
 			return fmt.Errorf("failed to create bucket: %w", err)

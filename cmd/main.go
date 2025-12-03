@@ -3,11 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+
 	"snaking/internal"
 
 	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 func main() {
@@ -22,67 +21,34 @@ func main() {
 }
 
 func tryToLoad() {
-	ctx := context.Background()
-	config := internal.MinIOConfig{
+
+	minioConfig := internal.MinIOConfig{
 		Endpoint:        "local-minio:9000",
 		AccessKeyID:     "minioadmin",
 		SecretAccessKey: "minioadmin",
 		UseSSL:          false,
-		BucketName:      "snaking",
 	}
-	objectName := "earth.jpg"
-	if _, err := internal.DownloadFromMinIO(ctx, config, objectName); err != nil {
-		log.Printf("Error downloading from MinIO: %v", err)
+	client, err := internal.NewMinIOClient(minioConfig)
+	if err != nil {
+		fmt.Printf("Error creating MinIO client: %v\n", err)
+		return
 	}
-}
 
-func interactWithMinio() error {
 	ctx := context.Background()
-
-	// Configuration for MinIO
-	endpoint := "local-minio:9000"
-	accessKeyID := "minioadmin"
-	secretAccessKey := "minioadmin"
-	useSSL := false
-
-	// Initialize MinIO client object
-	minioClient, err := minio.New(endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(accessKeyID, secretAccessKey, ""),
-		Secure: useSSL,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create minio client: %w", err)
+	if err = client.Pull(ctx, "snaking", "earth.jpg", minio.GetObjectOptions{}); err != nil {
+		fmt.Printf("Error pulling file from MinIO: %v\n", err)
+		return
 	}
 
-	// List all buckets to test connection
-	fmt.Println("Successfully connected to MinIO. Listing buckets:")
-
-	buckets, err := minioClient.ListBuckets(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list buckets: %w", err)
+	if err = client.Pull(ctx, "snaking", "raw/1.txt", minio.GetObjectOptions{}); err != nil {
+		fmt.Printf("Error pulling file from MinIO: %v\n", err)
+		return
 	}
 
-	for _, bucket := range buckets {
-		fmt.Println(bucket.Name)
+	if err = client.Pull(ctx, "snaking", "raw/", minio.GetObjectOptions{}); err != nil {
+		fmt.Printf("Error pulling folder from MinIO: %v\n", err)
+		return
 	}
 
-	// Create a test bucket if it doesn't exist
-	bucketName := "snaking-test-bucket"
-	exists, err := minioClient.BucketExists(ctx, bucketName)
-	if err != nil {
-		return fmt.Errorf("failed to check if bucket exists: %w", err)
-	}
-
-	if !exists {
-		// Create the bucket
-		err = minioClient.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
-		if err != nil {
-			return fmt.Errorf("failed to create bucket: %w", err)
-		}
-		fmt.Printf("Bucket %s created successfully\n", bucketName)
-	} else {
-		fmt.Printf("Bucket %s already exists\n", bucketName)
-	}
-
-	return nil
+	fmt.Println("Successfully pulled folder from MinIO")
 }

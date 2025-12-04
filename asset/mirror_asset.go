@@ -15,17 +15,19 @@ type MirrorAsset struct {
 	client   *internal.MinIOClient
 }
 
-func NewMirrorAsset(path string) (*MirrorAsset, error) {
+func NewMirrorAsset(path string, isRemote bool) (*MirrorAsset, error) {
 	client := internal.GetGlobalClient()
 	isFolder := strings.HasSuffix(path, "/")
 
 	// Check if the bucket exists
-	bucketName := strings.SplitN(path, "/", 2)[0]
-	ctx := context.Background()
-	if exists, err := client.HasBucket(ctx, bucketName); err != nil {
-		return nil, err
-	} else if !exists {
-		return nil, fmt.Errorf("bucket %s does not exist", bucketName)
+	if isRemote {
+		bucketName := strings.SplitN(path, "/", 2)[0]
+		ctx := context.Background()
+		if exists, err := client.HasBucket(ctx, bucketName); err != nil {
+			return nil, err
+		} else if !exists {
+			return nil, fmt.Errorf("bucket %s does not exist", bucketName)
+		}
 	}
 
 	return &MirrorAsset{
@@ -36,7 +38,7 @@ func NewMirrorAsset(path string) (*MirrorAsset, error) {
 }
 
 func (m *MirrorAsset) Where() string {
-	local_base := internal.GetEnv("LOCAL_BASE_PATH", "tmp/minio/")
+	local_base := internal.GetEnv("LOCAL_BASE_PATH", "/tmp/minio/")
 	return local_base + m.Path
 }
 
@@ -57,7 +59,7 @@ func (m *MirrorAsset) ShareTo(shmName string) error {
 		return fmt.Errorf("cannot share a folder asset")
 	}
 
-	if err := internal.CopyFileToShm(m.Where(), shmName); err != nil {
+	if err := internal.ShareFile(m.Where(), shmName); err != nil {
 		return err
 	}
 	return nil

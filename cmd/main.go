@@ -1,54 +1,87 @@
 package main
 
 import (
-	"context"
 	"fmt"
-
+	"os"
+	"os/exec"
 	"snaking/internal"
-
-	"github.com/minio/minio-go/v7"
+	"time"
 )
 
-func main() {
-	fmt.Println("Hello, Snaking!")
+type FdbOp string
 
-	// Execute the MinIO interaction test
-	// if err := interactWithMinio(); err != nil {
-	// 	log.Printf("Error interacting with MinIO: %v", err)
-	// }
+const (
+	Create  FdbOp = "--create"
+	Read    FdbOp = "--read"
+	ShmRead FdbOp = "--shm-read"
+	ShmWait FdbOp = "--shm-wait"
+	Clean   FdbOp = "--clean"
 
-	tryToLoad()
+	FdbPath = "test.fdb"
+	FdbShm  = "shm-fdb"
+)
+
+func fdbExec(op FdbOp, extraFile *os.File, args ...string) {
+	cmdArgs := []string{
+		"run",
+		"./pytests/main.py",
+		string(op),
+		"--path", args[0],
+	}
+	if op == ShmWait {
+		cmdArgs = append(cmdArgs, "--fd", args[1])
+	}
+
+	cmd := exec.Command(
+		"uv",
+		cmdArgs...,
+	)
+	if extraFile != nil {
+		cmd.ExtraFiles = []*os.File{extraFile}
+	}
+
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		fmt.Printf("Error running command: %v\n", err)
+		return
+	}
 }
 
-func tryToLoad() {
+func main() {
+	// pipe, err := semaphorepipe.New()
+	// if err != nil {
+	// 	fmt.Printf("Error creating semaphore pipe: %v\n", err)
+	// 	return
+	// }
+	// defer pipe.Close()
 
-	minioConfig := internal.MinIOConfig{
-		Endpoint:        "local-minio:9000",
-		AccessKeyID:     "minioadmin",
-		SecretAccessKey: "minioadmin",
-		UseSSL:          false,
-	}
-	client, err := internal.NewMinIOClient(minioConfig)
-	if err != nil {
-		fmt.Printf("Error creating MinIO client: %v\n", err)
-		return
-	}
+	// fdb, err := asset.NewMirrorAsset(FdbPath, false)
+	// fdbExec(Create, nil, fdb.Where())
+	// if err != nil {
+	// 	fmt.Printf("Error creating asset: %v\n", err)
+	// 	return
+	// }
+	// defer fdbExec(Clean, nil, fdb.Where())
 
-	ctx := context.Background()
-	if err = client.Pull(ctx, "snaking", "earth.jpg", minio.GetObjectOptions{}); err != nil {
-		fmt.Printf("Error pulling file from MinIO: %v\n", err)
-		return
-	}
+	// if err := fdb.ShareTo(FdbShm); err != nil {
+	// 	fmt.Printf("Error sharing asset: %v\n", err)
+	// 	return
+	// }
 
-	if err = client.Pull(ctx, "snaking", "raw/1.txt", minio.GetObjectOptions{}); err != nil {
-		fmt.Printf("Error pulling file from MinIO: %v\n", err)
-		return
-	}
+	// // go fdbExec(ShmWait, pipe.Receiver, FdbShm, fmt.Sprintf("%d", pipe.Receiver.Fd()))
+	// fmt.Printf("fd: %d\n", int(pipe.Receiver.Fd()))
+	// time.Sleep(10 * time.Second)
+	// pipe.Post()
 
-	if err = client.Pull(ctx, "snaking", "raw/", minio.GetObjectOptions{}); err != nil {
-		fmt.Printf("Error pulling folder from MinIO: %v\n", err)
-		return
-	}
+	workerCount := 1
+	server := internal.NewServer(workerCount)
+	go server.Run("/tmp/controller.sock")
 
-	fmt.Println("Successfully pulled folder from MinIO")
+	time.Sleep(10 * time.Second)
+	server.Ready()
+
+	select {}
 }

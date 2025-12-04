@@ -1,8 +1,8 @@
 package internal
 
 import (
+	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -21,12 +21,12 @@ func CopyFileToShm(sourcePath, shmName string) error {
 
 	// Ensure the shared memory directory exists
 	shmFilePath := filepath.Join(ShmPath, shmName)
-	if err := os.MkdirAll(filepath.Dir(shmFilePath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(shmFilePath), 0666); err != nil {
 		return err
 	}
 
 	// Create and open the destination file in shared memory
-	dst, err := os.OpenFile(shmFilePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
+	dst, err := os.OpenFile(shmFilePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
 		return err
 	}
@@ -42,22 +42,22 @@ func CopyFileToShm(sourcePath, shmName string) error {
 
 // ShareFile maps the source file to shared memory with the given shmName
 // Note: The maximum file size supported is 4GB
-func ShareFile(sourcePath, shmName string) {
+func ShareFile(sourcePath, shmName string) error {
 	// Open the source file and get file size
 	sourceFile, err := os.Open(sourcePath)
 	if err != nil {
-		log.Fatalf("Failed to open source file: %v", err)
+		return fmt.Errorf("failed to open source file: %w", err)
 	}
 	defer sourceFile.Close()
 
 	fileStat, err := sourceFile.Stat()
 	if err != nil {
-		log.Fatalf("Failed to stat source file: %v", err)
+		return fmt.Errorf("failed to stat source file: %w", err)
 	}
 	fileSize := fileStat.Size()
 	// Reject share file larger than 4GB (2^32 bytes)
 	if fileSize > 1<<32 {
-		log.Fatalf("File size exceeds 4GB limit: %d bytes", fileSize)
+		return fmt.Errorf("file size exceeds 4GB limit: %d bytes", fileSize)
 	}
 
 	sourceData, err := syscall.Mmap(
@@ -68,13 +68,13 @@ func ShareFile(sourcePath, shmName string) {
 		syscall.MAP_SHARED,
 	)
 	if err != nil {
-		log.Fatalf("Failed to mmap source file: %v", err)
+		return fmt.Errorf("failed to mmap source file: %w", err)
 	}
 	defer syscall.Munmap(sourceData)
 
 	shmFilePath := filepath.Join(ShmPath, shmName)
-	if err = os.MkdirAll(filepath.Dir(shmFilePath), 0755); err != nil {
-		log.Fatalf("Failed to create shm directory: %v", err)
+	if err = os.MkdirAll(filepath.Dir(shmFilePath), 0666); err != nil {
+		return fmt.Errorf("failed to create shm directory: %w", err)
 	}
 	shmFd, err := syscall.Open(
 		shmFilePath,
@@ -82,12 +82,12 @@ func ShareFile(sourcePath, shmName string) {
 		0666,
 	)
 	if err != nil {
-		log.Fatalf("ShmOpen failed: %v", err)
+		return fmt.Errorf("shm file open failed: %w", err)
 	}
 	defer syscall.Close(shmFd)
 
 	if err := syscall.Ftruncate(shmFd, fileSize); err != nil {
-		log.Fatalf("Ftruncate failed: %v", err)
+		return fmt.Errorf("syscall.Ftruncate failed: %w", err)
 	}
 
 	shmData, err := syscall.Mmap(
@@ -98,12 +98,14 @@ func ShareFile(sourcePath, shmName string) {
 		syscall.MAP_SHARED,
 	)
 	if err != nil {
-		log.Fatalf("Failed to mmap shm: %v", err)
+		return fmt.Errorf("failed to mmap shm: %w", err)
 	}
 	defer syscall.Munmap(shmData)
 
 	n := copy(shmData, sourceData)
 	if n != int(fileSize) {
-		log.Fatalf("Copied size mismatch: expected %d, got %d", fileSize, n)
+		return fmt.Errorf("copied size mismatch: expected %d, got %d", fileSize, n)
 	}
+
+	return nil
 }

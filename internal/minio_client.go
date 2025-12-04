@@ -60,7 +60,7 @@ func (m *MinIOClient) HasBucket(ctx context.Context, bucketName string) (bool, e
 
 func (m *MinIOClient) pullSingleFile(ctx context.Context, bucketName, objectName string, getOptions minio.GetObjectOptions) error {
 	localPath := filepath.Join("/tmp/minio", bucketName, objectName)
-	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(localPath), 0666); err != nil {
 		return fmt.Errorf("failed to create directory for %s: %w", localPath, err)
 	}
 

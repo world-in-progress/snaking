@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
     git \
+    protobuf-compiler \
     && apt-get clean -y && rm -rf /var/lib/apt/lists/*
 
 ARG GIT_USER_NAME
@@ -31,4 +32,14 @@ RUN git config --global http.proxy ${HTTP_PROXY} && \
 # Install Go tools
 RUN go install -v golang.org/x/tools/gopls@latest && \
     go install -v github.com/go-delve/delve/cmd/dlv@latest && \
-    go install -v honnef.co/go/tools/cmd/staticcheck@latest
+    go install -v honnef.co/go/tools/cmd/staticcheck@latest && \
+    go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
+    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+
+# Install uv (Universal Version Manager) and add to PATH
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+
+# Create a uv python environment with Python 3.13
+RUN uv python install 3.13 && \
+    uv python pin 3.13

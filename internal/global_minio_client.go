@@ -21,8 +21,8 @@ func initGlobalClient() error {
 func loadMinIOConfigFromEnv() MinIOConfig {
 	return MinIOConfig{
 		Endpoint:        GetEnv("MINIO_ENDPOINT"),
-		AccessKeyID:     GetEnv("MINIO_ACCESS_KEY_ID"),
-		SecretAccessKey: GetEnv("MINIO_SECRET_ACCESS_KEY"),
+		AccessKeyID:     GetEnv("MINIO_ACCESS_KEY"),
+		SecretAccessKey: GetEnv("MINIO_SECRET_KEY"),
 		UseSSL:          GetEnvAsBool("MINIO_USE_SSL", false),
 	}
 }

@@ -24,8 +24,15 @@
         // Add proxy here if needed
         // "HTTP_PROXY": "http://host.docker.internal:your_proxy_port",
         // "HTTPS_PROXY": "http://host.docker.internal:your_proxy_port",
+
         // Add your local MinIO container name to NO_PROXY if use proxies
         // "NO_PROXY": "localhost,127.0.0.1,::1,host.docker.internal, your-local-minio-container-name"
+
+        // MinIO configuration
+        // "MINIO_ENDPOINT": "local-minio:9000",
+        // "MINIO_ACCESS_KEY": "minioadmin",
+        // "MINIO_SECRET_KEY": "minioadmin",
+        // "MINIO_USE_SSL": "false"
     },
     "forwardPorts": [8080],
     "customizations": {
@@ -37,6 +44,7 @@
             },
             "extensions": [
                 "golang.go",
+                "ms-python.python",
                 "formulahendry.code-runner"
             ]
         }

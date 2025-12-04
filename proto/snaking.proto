@@ -1,0 +1,25 @@
+syntax = "proto3";
+package snaking;
+option go_package = "./pb";
+
+service Controller {
+    rpc WaitForStart (Empty) returns (StartConfig);
+    rpc SyncStep (StepStatus) returns (StepResponse);
+}
+
+message Empty {}
+
+message StartConfig {
+    bool ready = 1;
+    string shared_data_path = 2;
+    int32 total_workers = 3;
+}
+
+message StepStatus {
+    string worker_id = 1;
+    int32 current_step = 2;
+}
+
+message StepResponse {
+    bool should_continue = 1;
+}

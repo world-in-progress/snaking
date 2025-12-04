@@ -1,4 +1,4 @@
-package axe
+package asset
 
 import (
 	"context"
@@ -48,6 +48,17 @@ func (m *MirrorAsset) Pull() error {
 	ctx := context.Background()
 	if err := m.client.Pull(ctx, bucketName, objectName, minio.GetObjectOptions{}); err != nil {
 		return fmt.Errorf("failed to pull asset %s from bucket %s: %w", objectName, bucketName, err)
+	}
+	return nil
+}
+
+func (m *MirrorAsset) ShareTo(shmName string) error {
+	if m.isFolder {
+		return fmt.Errorf("cannot share a folder asset")
+	}
+
+	if err := internal.CopyFileToShm(m.Where(), shmName); err != nil {
+		return err
 	}
 	return nil
 }

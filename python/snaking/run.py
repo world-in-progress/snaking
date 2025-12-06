@@ -6,8 +6,8 @@ import os
 import random
 import fastdb4py as fdb
 
-from src.snaking import is_ready, wait_for_sync
+from src.snaking import wait_for_ready, wait_for_sync
 
 if __name__ == '__main__':
-    is_ready()
+    wait_for_ready()
     

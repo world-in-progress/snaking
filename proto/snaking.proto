@@ -3,16 +3,51 @@ package snaking;
 option go_package = "./pb";
 
 service Controller {
+    rpc PostError (ErrorMessage) returns (Empty);
     rpc WaitForStart (Empty) returns (StartConfig);
     rpc SyncStep (StepStatus) returns (StepResponse);
+    rpc Register (RegisterInfo) returns (RegisteredMessage);
+    rpc FinishPreprocess (PreprocessFinished) returns (Empty);
+    rpc HeartBeat (HeartbeatInfo) returns (HeartbeatResponse);
+    rpc ResourceReady (SuccessMessage) returns (SuccessMessage);
 }
 
 message Empty {}
 
+message ErrorMessage {
+    string worker_id = 1;
+    string message = 2;
+}
+
+message RegisterInfo {
+    string worker_id = 1;
+}
+
+message RegisteredMessage {
+    bool success = 1;
+    string shared_data_path = 2;
+}
+
+message PreprocessFinished {
+    string worker_id = 1;
+}
+
+message HeartbeatInfo {
+    string worker_id = 1;
+    int32 status = 2;
+}
+
+message HeartbeatResponse {
+    int32 status = 1;
+}
+
+message SuccessMessage {
+    bool success = 1;
+}
+
 message StartConfig {
     bool ready = 1;
     string shared_data_path = 2;
-    int32 total_workers = 3;
 }
 
 message StepStatus {

@@ -4,8 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"snaking/internal"
-	"time"
+	"snaking/orchestrator"
 )
 
 type FdbOp string
@@ -76,12 +75,15 @@ func main() {
 	// time.Sleep(10 * time.Second)
 	// pipe.Post()
 
-	workerCount := 1
-	server := internal.NewServer(workerCount)
-	go server.Run("/tmp/controller.sock")
+	metaInfo := &orchestrator.MetaInfo{
+		AssetPath: "/tmp/minio",
+		WorkerList: []string{
+			"proprocessor-001",
+		},
+	}
 
-	time.Sleep(10 * time.Second)
-	server.Ready()
+	server, _ := orchestrator.New(metaInfo)
+	go server.Run("/tmp/controller.sock")
 
 	select {}
 }

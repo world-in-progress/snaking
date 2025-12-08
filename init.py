@@ -1,6 +1,5 @@
 import os
-# os.environ['WORKER_ID'] = 'preprocessor-001'
-os.environ['WORKER_ID'] = 'solver-001'
+os.environ['WORKER_ID'] = 'preprocessor-001'
 import time
 import logging
 import fastdb4py as fdb
@@ -14,10 +13,18 @@ class Point(fdb.Feature):
     z: fdb.F64
 
 if __name__ == '__main__':
-    with snaking.simulating() as shared_path:
-        time.sleep(15)
-        db_path = shared_path / 'points.fdb'
-        fdb.ORM.truncate([
+    with snaking.proprocessing():
+        time.sleep(5)  # Simulate some preprocessing work
+        db_path = snaking.shared_path / 'points.fdb'
+        db = fdb.ORM.truncate([
             fdb.TableDefn(Point, 100, 'points')
-        ]).save(str(db_path))
-        raise RuntimeError("Simulated preprocessing error")
+        ])
+        
+        ps = db[Point]['points']
+        
+        for i in range(100):
+            p = ps[i]
+            p.x = float(i)
+            p.y = float(i) * 2.0
+            p.z = float(i) * 3.0
+        db.save(str(db_path))

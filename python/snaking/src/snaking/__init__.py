@@ -1,11 +1,10 @@
 import os
 import grpc
 import time
-import random
 import atexit
 import logging
 import threading
-from enum import Enum
+from enum import IntEnum
 from pathlib import Path
 from typing import Generator
 from contextlib import contextmanager
@@ -18,48 +17,108 @@ logger = logging.getLogger(__name__)
 # TODO(Dsssyc): SERVER_ADDRESS should be configurable
 SERVER_ADDRESS = 'unix:///tmp/controller.sock'
 
-REGISTER_TIMEOUT = 2.0      # seconds
+REGISTER_TIMEOUT = 30.0      # seconds
 HEARTBEAT_TIMEOUT = 1.0     # seconds
 
-class WorkerStatus(Enum):
-    READY = 0
-    RUNNING = 1
-    STOPPING = 2
-    STOPPED = 3
-    PENDING = 4
+class WorkerStatus(IntEnum):
+    STOPPED = 0
+    PENDING = 1
+    READY = 2
+    RUNNING = 3
 
 def _heartbeat_loop(snaking_instance: 'Snaking', interval: float = 3.0):
-    snaking_instance._status = WorkerStatus.RUNNING
-    while snaking_instance.alive:
+    snaking_instance._status = WorkerStatus.RUNNING.value
+    while snaking_instance.keep_on:
         try:
             status = snaking_instance._heartbeat()
             print(status)
-            if status != snaking_instance._status:
-                snaking_instance._status = WorkerStatus.STOPPED
+            if status != snaking_instance.status:
+                snaking_instance.status = WorkerStatus.STOPPED
                 break
             if status == WorkerStatus.STOPPED:
                 break
             
             time.sleep(interval)
         except Exception:
-            snaking_instance._status = WorkerStatus.STOPPED
+            snaking_instance.status = WorkerStatus.STOPPED
 
 class Snaking:
     def __init__(self):
+        self._final_step_int: int = 0
+        self._current_step_int: int = 0
+        self._coupling_step_int: int = 0
+        
+        self._lock: threading.Lock = threading.RLock()
+        
         self._id: str = os.getenv('WORKER_ID')
-        self._status: WorkerStatus = WorkerStatus.READY
+        self._shared_path: Path | None = None
+        self._status: int = WorkerStatus.READY.value
         self._channel: grpc.Channel = grpc.insecure_channel(SERVER_ADDRESS)
         self._stub: pb_grpc.ControllerStub = pb_grpc.ControllerStub(self._channel)
     
     @property
-    def alive(self) -> bool:
-        return self._status not in {WorkerStatus.STOPPING, WorkerStatus.STOPPED}
+    def shared_path(self) -> Path:
+        if self._shared_path is None:
+            raise RuntimeError('Shared path is not available before registration.')
+        return self._shared_path
+    
+    @property
+    def status(self) -> WorkerStatus:
+        with self._lock:
+            return WorkerStatus(self._status)
+    
+    @status.setter
+    def status(self, value: WorkerStatus):
+        with self._lock:
+            self._status = value.value
+    
+    @property
+    def current_step(self) -> int:
+        with self._lock:
+            return self._current_step_int
+    
+    @current_step.setter
+    def current_step(self, value: int):
+        with self._lock:
+            self._current_step_int = value
+    
+    @property
+    def coupling_step(self) -> int:
+        with self._lock:
+            return self._coupling_step_int
+    
+    @coupling_step.setter
+    def coupling_step(self, value: int):
+        with self._lock:
+            self._coupling_step_int = value
+    
+    @property
+    def final_step(self) -> int:
+        with self._lock:
+            return self._final_step_int
+    
+    @final_step.setter
+    def final_step(self, value: int):
+        with self._lock:
+            self._final_step_int = value
+    
+    @property
+    def keep_on(self) -> bool:
+        with self._lock:
+            if self.current_step >= self.final_step:
+                self.status = WorkerStatus.STOPPED
+                return False
+            
+            if self.coupling_step > 0 and self.current_step % self.coupling_step == 0:
+                logger.debug(f'Worker {self._id} waiting for sync at step {self.current_step}...')
+                self._wait_for_sync()
+            return self.status not in {WorkerStatus.STOPPED}
     
     @contextmanager
-    def proprocessing(self) -> Generator[Path, None, None]:
+    def proprocessing(self):
         try:
-            shared_path = self._register()
-            yield shared_path
+            self._register()
+            yield   
         except TimeoutError:
             # TODO(Dsssyc): Handle registration timeout reasonably
             pass
@@ -69,23 +128,29 @@ class Snaking:
             self._finish_preprocess()
     
     @contextmanager
-    def simulating(self):
+    def simulating(self, coupling_step: int):
         try:
-            shared_path = self._register()
-            self._wait_for_ready()
-            yield shared_path
+            if self._shared_path is not None:
+                raise RuntimeError('Worker already in simulating context.')
+            
+            self._register()
+            self._wait_for_ready() # hold on?
+            self.coupling_step = coupling_step
+            yield
+        except Exception as e:
+            self.post_error(f'Error during simulation in worker {self._id} at step: {str(e)}')
         finally:
             # TODO(Dsssyc): Implement proper pending/stopping logic
             pass
         
     def post_error(self, error_message: str = ''):
-        self._status = WorkerStatus.STOPPED
+        self.status = WorkerStatus.STOPPED
         req = pb.ErrorMessage(worker_id=self._id, message=error_message)
         self._stub.PostError(req)
         print('Posted error to controller:', error_message)
     
     def _heartbeat(self) -> WorkerStatus:
-        req = pb.HeartbeatInfo(worker_id=self._id, status=self._status.value)
+        req = pb.HeartbeatInfo(worker_id=self._id, status=self._status)
         
         current = time.time()
         timeout_valid = HEARTBEAT_TIMEOUT is not None and HEARTBEAT_TIMEOUT > 0
@@ -105,7 +170,7 @@ class Snaking:
         req = pb.PreprocessFinished(worker_id=self._id)
         self._stub.FinishPreprocess(req)
 
-    def _register(self) -> Path:
+    def _register(self):
         start_time = time.time()
         while True:
             if REGISTER_TIMEOUT is not None and time.time() - start_time > REGISTER_TIMEOUT:
@@ -118,7 +183,8 @@ class Snaking:
                     # Start heartbeat thread
                     heartbeat_thread = threading.Thread(target=_heartbeat_loop, args=(self,), daemon=True)
                     heartbeat_thread.start()
-                    return Path(res.shared_data_path)
+                    self._shared_path = Path(res.shared_data_path)
+                    return
                 else:
                     # TODO (Dsssyc): Handle registration failure reasonably
                     pass
@@ -145,8 +211,8 @@ class Snaking:
         
         return ready_flag
 
-    def wait_for_sync(self, simulation_time: int) -> bool:
-        req = pb.StepStatus(worker_id=self._id, current_step=simulation_time)
+    def _wait_for_sync(self) -> bool:
+        req = pb.StepStatus(worker_id=self._id, current_step=self._current_step_int)
         sync_res = self._stub.SyncStep(req)
         return sync_res.should_continue
 

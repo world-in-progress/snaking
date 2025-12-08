@@ -23,11 +23,10 @@ const (
 type WorkerStatusEnum int
 
 const (
-	READY WorkerStatusEnum = iota
-	RUNNING
-	STOPPING
-	STOPPED
+	STOPPED WorkerStatusEnum = iota
 	PENDING
+	READY
+	RUNNING
 )
 
 type StepBarrier struct {
@@ -164,7 +163,6 @@ func (o *Orchestrator) PostError(ctx context.Context, in *pb.ErrorMessage) (*pb.
 
 	status.status = STOPPED
 	status.errorMsg = errorMsg
-	log.Printf("!!!!")
 	return &pb.Empty{}, nil
 }
 

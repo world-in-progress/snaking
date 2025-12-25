@@ -76,7 +76,7 @@ func main() {
 	// pipe.Post()
 
 	metaInfo := &orchestrator.MetaInfo{
-		AssetPath: "/tmp/minio",
+		AssetPath: "./",
 		WorkerList: []string{
 			"proprocessor-001",
 		},

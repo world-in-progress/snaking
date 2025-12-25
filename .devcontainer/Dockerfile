@@ -1,4 +1,4 @@
-FROM docker.io/library/golang:1.25-bookworm
+FROM docker.io/library/golang:1.25.5-bookworm
 
 ARG HTTP_PROXY
 ARG HTTPS_PROXY

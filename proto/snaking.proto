@@ -3,32 +3,56 @@ package snaking;
 option go_package = "./pb";
 
 service Controller {
-    rpc PostError (ErrorMessage) returns (Empty);
-    rpc WaitForStart (Empty) returns (StartConfig);
-    rpc SyncStep (StepStatus) returns (StepResponse);
-    rpc Register (RegisterInfo) returns (RegisteredMessage);
-    rpc FinishPreprocess (PreprocessFinished) returns (Empty);
-    rpc HeartBeat (HeartbeatInfo) returns (HeartbeatResponse);
-    rpc ResourceReady (SuccessMessage) returns (SuccessMessage);
+    // rpc PostError (ErrorMessage) returns (Empty);
+    // rpc WaitForStart (Empty) returns (StartConfig);
+    // rpc SyncStep (StepStatus) returns (StepResponse);
+    // rpc FinishPreprocess (PreprocessFinished) returns (Empty);
+    // rpc HeartBeat (HeartbeatInfo) returns (HeartbeatResponse);
+    // rpc ResourceReady (SuccessMessage) returns (SuccessMessage);
 
+    rpc Register (RegisterInfo) returns (RegisteredMessage);
     rpc ControlChannel (stream WorkerStreamMessage) returns (stream OrchestratorStreamMessage);
 }
 
 message Empty {}
 
+message RegisterInfo {
+    string worker_id = 1;
+    WorkerRole role = 2;
+}
+
+message RegisteredMessage {
+    bool success = 1;
+}
+
+enum WorkerRole {
+    WR_UNKNOWN = 0;
+    WR_PREPROCESSOR = 1;
+    WR_SOLVER = 2;
+    WR_POSTPROCESSOR = 3;
+}
+
+enum WorkerStatus {
+    WS_IDLE = 0;
+    WS_RUNNING = 1;
+    WS_COMPLETED = 2;
+    WS_FAILED = 3;
+    WS_STOP = 4;
+}
+
 enum WorkerStreamMessageType {
     WSM_UNKNOWN = 0;
-    WSM_REGISTER = 1;
-    WSM_HEARTBEAT = 2;
-    WSM_HANGUP = 3;
-    WSM_ERROR = 4;
+    WSM_REPORTSTATUS = 1;
+    WSM_REPORTSTEP = 2;
 }
 
 message WorkerStreamMessage {
     string worker_id = 1;
-    string message_id = 2;
-    WorkerStreamMessageType type = 3;
-    string payload = 4;
+    WorkerStreamMessageType type = 2;
+    oneof payload {
+        WorkerStatus status = 3;
+        int32 current_step = 4;
+    }
 }
 
 enum OrchestratorStreamMessageType {
@@ -39,28 +63,18 @@ enum OrchestratorStreamMessageType {
 
 message OrchestratorStreamMessage {
     OrchestratorStreamMessageType type = 1;
-    string message_id = 2;
-    string payload = 3;
+    WorkerStatus status = 2;
 }
 
-message WorkerStatus {
-    string worker_id = 1;
-    int32 status = 2;
-    string message = 3;
-}
+// message WorkerStatus {
+//     string worker_id = 1;
+//     int32 status = 2;
+//     string message = 3;
+// }
 
 message ErrorMessage {
     string worker_id = 1;
     string message = 2;
-}
-
-message RegisterInfo {
-    string worker_id = 1;
-}
-
-message RegisteredMessage {
-    bool success = 1;
-    string shared_data_path = 2;
 }
 
 message PreprocessFinished {

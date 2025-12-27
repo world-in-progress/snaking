@@ -1,0 +1,8 @@
+{
+    "workers": [
+        {
+            "id": "preprocessor-001",
+            "role": "preprocessor"
+        }
+    ]
+}

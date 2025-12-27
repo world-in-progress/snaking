@@ -2,260 +2,103 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	pb "snaking/internal/proto"
-	"strings"
+	w "snaking/orchestrator/worker"
 	"sync"
-	"time"
+	"syscall"
 
 	"google.golang.org/grpc"
 )
 
-const (
-	solverPrefix            = "solver"
-	preprocessorPrefix      = "preprocessor"
-	monitorHeartbeatTimeout = 10 * time.Second
-)
-
-type WorkerStatusEnum int
-
-const (
-	STOPPED WorkerStatusEnum = iota
-	PENDING
-	READY
-	RUNNING
-)
-
-type StepBarrier struct {
-	arrivedCount int
-	releaseCh    chan struct{}
-}
-
 type MetaInfo struct {
-	AssetPath  string
-	WorkerList []string
+	Workers []w.WorkerInfo `json:"workers"`
 }
 
 type WorkerStatus struct {
-	lastUpdate int64
-	errorMsg   string
-	status     WorkerStatusEnum
+	Info   string
+	Role   pb.WorkerRole
+	Status pb.WorkerStatus
 }
 
 type Orchestrator struct {
 	pb.UnimplementedControllerServer
+	workerMu  sync.Mutex
+	stopCh    chan struct{}
+	readyCh   chan struct{}
+	workerMap map[string]*w.Worker
 
-	mu           sync.Mutex
-	readyCh      chan struct{}
-	preprocessCh chan struct{}
-
-	allHealthy       bool
-	solverList       map[string]*WorkerStatus
-	preprocessorList map[string]*WorkerStatus
-
-	metaInfo *MetaInfo
-
-	barriers map[int32]*StepBarrier
-
-	cmdStreams map[string]pb.Controller_ControlChannelServer
-	streamMu   sync.Mutex
+	streamMu sync.Mutex
+	// workerStreams map[string]pb.Controller_ControlChannelServer
 }
 
-func New(metaInfo *MetaInfo) (*Orchestrator, error) {
+func New(metaJsonPath string) (*Orchestrator, error) {
+	file, err := os.Open(metaJsonPath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var metaInfo MetaInfo
+	decoder := json.NewDecoder(file)
+	if err := decoder.Decode(&metaInfo); err != nil {
+		return nil, err
+	}
+
+	var workerMap = make(map[string]*w.Worker)
+	for _, workerInfo := range metaInfo.Workers {
+		workerMap[workerInfo.Id] = w.New(&workerInfo)
+	}
 
 	o := &Orchestrator{
-		allHealthy:       true,
-		metaInfo:         metaInfo,
-		readyCh:          make(chan struct{}),
-		preprocessCh:     make(chan struct{}),
-		barriers:         make(map[int32]*StepBarrier),
-		solverList:       make(map[string]*WorkerStatus),
-		preprocessorList: make(map[string]*WorkerStatus),
-		cmdStreams:       make(map[string]pb.Controller_ControlChannelServer),
+		workerMap: workerMap,
+		stopCh:    make(chan struct{}),
+		readyCh:   make(chan struct{}),
 	}
 
 	return o, nil
 }
 
-func (o *Orchestrator) getWorkerStatusNoLock(workerId string) *WorkerStatus {
-	if status, exists := o.solverList[workerId]; exists {
-		return status
-	} else if status, exists := o.preprocessorList[workerId]; exists {
-		return status
-	}
-	return nil
-}
-
-// GRPC Methods
+// GRPC methods
 func (o *Orchestrator) Register(ctx context.Context, in *pb.RegisterInfo) (*pb.RegisteredMessage, error) {
-	// o.mu.Lock()
-
-	// workerId := in.WorkerId
-	// newStatus := &WorkerStatus{
-	// 	lastUpdate: time.Now().Unix(),
-	// 	status:     READY,
-	// 	errorMsg:   "",
-	// }
-
-	// // Register worker
-	// if strings.HasPrefix(workerId, solverPrefix) {
-	// 	o.solverList[workerId] = newStatus
-	// } else if strings.HasPrefix(workerId, preprocessorPrefix) {
-	// 	o.preprocessorList[workerId] = newStatus
-	// } else {
-	// 	log.Printf("Unknown worker prefix for worker ID: %s", workerId)
-	// }
-
-	// // If all workers are registered, signal readiness
-	// allReadyCh := o.readyCh
-	// if len(o.metaInfo.WorkerList) == len(o.solverList)+len(o.preprocessorList) {
-	// 	close(allReadyCh)
-	// }
-
-	// o.mu.Unlock()
-	return &pb.RegisteredMessage{Success: true, SharedDataPath: o.metaInfo.AssetPath}, nil
-}
-
-// GRPC Methods
-func (o *Orchestrator) FinishPreprocess(ctx context.Context, in *pb.PreprocessFinished) (*pb.Empty, error) {
+	o.workerMu.Lock()
 	workerId := in.WorkerId
+	workerRole := in.Role
 
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	// Mark preprocessor as finished
-	if status, exists := o.preprocessorList[workerId]; exists {
-		status.status = STOPPED
-	} else {
-		log.Printf("Received preprocess finish from unknown worker ID: %s", workerId)
+	// Validate worker id
+	if _, exists := o.workerMap[workerId]; !exists {
+		o.workerMu.Unlock()
+		log.Printf("Unknown worker %s tried to register", workerId)
+		return &pb.RegisteredMessage{Success: false}, nil
 	}
 
-	// Check if all preprocessors are done
-	allDone := true
-	for _, status := range o.preprocessorList {
-		if status.status != STOPPED {
-			allDone = false
-			break
-		}
+	// Validate worker connection status
+	worker := o.workerMap[workerId]
+	if worker.Connecting {
+		o.workerMu.Unlock()
+		log.Printf("Worker %s already registered", workerId)
+		return &pb.RegisteredMessage{Success: false}, nil
 	}
 
-	if allDone {
-		close(o.preprocessCh)
+	// Validate worker role
+	if worker.Role != workerRole {
+		o.workerMu.Unlock()
+		log.Printf("Worker %s role mismatch: expected %v, got %v", workerId, worker.Role, workerRole)
+		return &pb.RegisteredMessage{Success: false}, nil
 	}
 
-	return &pb.Empty{}, nil
-}
-
-// GRPC Methods
-func (o *Orchestrator) PostError(ctx context.Context, in *pb.ErrorMessage) (*pb.Empty, error) {
-	workerId := in.WorkerId
-	errorMsg := in.Message
-
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	log.Printf("Received error from worker (%s): %s\n", workerId, errorMsg)
-
-	// Update worker status to STOPPED and record the error message
-	status := o.getWorkerStatusNoLock(workerId)
-	if status == nil {
-		log.Printf("Received error from unknown worker ID: %s", workerId)
-		return &pb.Empty{}, nil
-	}
-
-	status.status = STOPPED
-	status.errorMsg = errorMsg
-	return &pb.Empty{}, nil
-}
-
-// GRPC Methods
-func (o *Orchestrator) HeartBeat(ctx context.Context, in *pb.HeartbeatInfo) (*pb.HeartbeatResponse, error) {
-	workerId := in.WorkerId
-	workerStatus := in.Status
-	fmt.Printf("Get heartbeat from worker (%s) with status %d\n", workerId, workerStatus)
-
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	// Update worker status based on the heartbeat
-	status := o.getWorkerStatusNoLock(workerId)
-	if status == nil {
-		log.Printf("Received heartbeat from unknown worker ID: %s", workerId)
-		return &pb.HeartbeatResponse{Status: int32(STOPPED)}, nil
-	}
-
-	status.lastUpdate = time.Now().Unix()
-	status.status = WorkerStatusEnum(workerStatus)
-
-	if !o.allHealthy {
-		return &pb.HeartbeatResponse{Status: int32(STOPPED)}, nil
-	}
-	return &pb.HeartbeatResponse{Status: int32(status.status)}, nil
-}
-
-// GRPC Methods
-func (o *Orchestrator) WaitForStart(ctx context.Context, in *pb.Empty) (*pb.StartConfig, error) {
-	// Wait for readiness signal
-	select {
-	case <-o.readyCh:
-		// Once ready, wait for all preprocessors to finish
-		<-o.preprocessCh
-		if o.metaInfo == nil {
-			return &pb.StartConfig{
-				Ready:          false,
-				SharedDataPath: "",
-			}, nil
-		}
-		return &pb.StartConfig{
-			Ready:          true,
-			SharedDataPath: o.metaInfo.AssetPath,
-		}, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-// GRPC Methods
-func (o *Orchestrator) SyncStep(ctx context.Context, in *pb.StepStatus) (*pb.StepResponse, error) {
-	step := in.CurrentStep
-	// workerID := in.WorkerId
-
-	o.mu.Lock()
-	barrier, exists := o.barriers[step]
-	if !exists {
-		barrier = &StepBarrier{
-			arrivedCount: 0,
-			releaseCh:    make(chan struct{}),
-		}
-		o.barriers[step] = barrier
-
-		// Clean up previous step barrier
-		delete(o.barriers, step-1)
-	}
-
-	barrier.arrivedCount++
-	if barrier.arrivedCount == len(o.solverList) {
-		close(barrier.releaseCh)
-	}
-
-	waitCh := barrier.releaseCh
-	o.mu.Unlock()
-
-	select {
-	case <-waitCh:
-		return &pb.StepResponse{
-			ShouldContinue: true,
-		}, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+	o.workerMu.Unlock()
+	return &pb.RegisteredMessage{Success: true}, nil
 }
 
 // GRPC Methods
 func (o *Orchestrator) ControlChannel(stream pb.Controller_ControlChannelServer) error {
-	// 1. Handshake: Read the first message to get Worker ID
+	// Handshake to get worker ID
 	firstMsg, err := stream.Recv()
 	if err != nil {
 		return err
@@ -263,26 +106,18 @@ func (o *Orchestrator) ControlChannel(stream pb.Controller_ControlChannelServer)
 	workerId := firstMsg.WorkerId
 
 	o.streamMu.Lock()
-	// Register the worker
-	o.cmdStreams[workerId] = stream
+	thisWorker := o.workerMap[workerId]
+	thisWorker.Connect(stream)
 	log.Printf("Worker %s connected to control channel", workerId)
 
-	// Initialize worker status
-	newStatus := &WorkerStatus{
-		lastUpdate: time.Now().Unix(),
-		status:     READY,
-		errorMsg:   "",
+	// Check ready if all workers are connected
+	readyWorkerNum := 0
+	for _, worker := range o.workerMap {
+		if worker.Connecting {
+			readyWorkerNum++
+		}
 	}
-	if strings.HasPrefix(workerId, solverPrefix) {
-		o.solverList[workerId] = newStatus
-	} else if strings.HasPrefix(workerId, preprocessorPrefix) {
-		o.preprocessorList[workerId] = newStatus
-	} else {
-		log.Printf("Unknown worker prefix for worker ID: %s", workerId)
-	}
-
-	// If all workers are registered, signal readiness
-	if len(o.metaInfo.WorkerList) == len(o.solverList)+len(o.preprocessorList) {
+	if readyWorkerNum == len(o.workerMap) {
 		close(o.readyCh)
 	}
 	o.streamMu.Unlock()
@@ -290,61 +125,66 @@ func (o *Orchestrator) ControlChannel(stream pb.Controller_ControlChannelServer)
 	// Cleanup when stream closes
 	defer func() {
 		o.streamMu.Lock()
-		delete(o.cmdStreams, workerId)
-		o.streamMu.Unlock()
+		o.workerMap[workerId].Disconnect()
 		log.Printf("Worker %s disconnected from control channel", workerId)
+
+		stopWorkerNum := 0
+		for _, worker := range o.workerMap {
+			if worker.Status == pb.WorkerStatus_WS_STOP {
+				stopWorkerNum++
+			}
+		}
+		if stopWorkerNum == len(o.workerMap) {
+			close(o.stopCh)
+		}
+		o.streamMu.Unlock()
 	}()
 
-	// 3. Keep reading loop
+	// Listen for incoming messages
 	for {
-		status, err := stream.Recv()
+		msg, err := stream.Recv()
 		if err != nil {
 			return err
 		}
-		// Handle worker status updates if needed
-		log.Printf("Received status from %s: %v", workerId, status)
+		o.streamMu.Lock()
+		o.workerMap[msg.WorkerId].HandleMessage(msg)
+		o.streamMu.Unlock()
 	}
 }
 
-func (o *Orchestrator) BroadcastCommand(cmdType pb.OrchestratorCommand_CommandType, payload string) {
+func (o *Orchestrator) triggerPreprocessing() {
+	// Wait for all workers to be ready
+	<-o.readyCh
+	log.Printf("Well, let's go!")
+
+	// Send running signal to all preprocessors
 	o.streamMu.Lock()
 	defer o.streamMu.Unlock()
 
-	cmd := &pb.OrchestratorCommand{
-		Command: cmdType,
-		Payload: payload,
-	}
-
-	for id, stream := range o.cmdStreams {
-		if err := stream.Send(cmd); err != nil {
-			log.Printf("Failed to send command to %s: %v", id, err)
-			// Optionally remove the broken stream
-		}
-	}
-}
-
-func (o *Orchestrator) monitorHeartbeats() {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		o.mu.Lock()
-		now := time.Now().Unix()
-
-		for id, worker := range o.solverList {
-			if now-worker.lastUpdate > int64(monitorHeartbeatTimeout.Seconds()) {
-
-				o.allHealthy = false
-				worker.errorMsg = "Heartbeat timeout"
-				log.Printf("Worker %s marked as dead due to heartbeat timeout", id)
+	for _, worker := range o.workerMap {
+		if worker.Role == pb.WorkerRole_WR_PREPROCESSOR {
+			if err := worker.Run(); err != nil {
+				log.Printf("Error sending preprocessing command to %s: %v", worker.Id, err)
 			}
 		}
-
-		o.mu.Unlock()
 	}
 }
 
-func (o *Orchestrator) Run(socketPath string) error {
+func (o *Orchestrator) BroadcastStop() {
+	o.streamMu.Lock()
+	for _, worker := range o.workerMap {
+		if err := worker.Stop(); err != nil {
+			log.Printf("Error sending stop command to %s: %v", worker.Id, err)
+		}
+	}
+	o.streamMu.Unlock()
+
+	// Wait for all workers to stop
+	<-o.stopCh
+	log.Printf("All workers have stopped.")
+}
+
+func (o *Orchestrator) Start(socketPath string) error {
 	if _, err := os.Stat(socketPath); err == nil {
 		os.Remove(socketPath)
 	}
@@ -357,15 +197,28 @@ func (o *Orchestrator) Run(socketPath string) error {
 
 	grpcServer := grpc.NewServer()
 	pb.RegisterControllerServer(grpcServer, o)
+	go o.triggerPreprocessing()
 
-	// Start a goroutine to monitor worker heartbeats after several seconds to allow workers to start
-	go o.monitorHeartbeats()
+	errCh := make(chan error, 1)
+	go func() {
+		if err := grpcServer.Serve(listener); err != nil {
+			errCh <- err
+		}
+	}()
 
-	// Start serving
-	log.Printf("Simulation orchestrator listening on %s", socketPath)
-	if err := grpcServer.Serve(listener); err != nil {
-		log.Fatalf("failed to serve: %v", err)
+	log.Printf("Orchestrator listening on %s", socketPath)
+
+	// Wait for termination signal or server error
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	select {
+	case <-sigCh:
+		log.Println("\nReceived shutdown signal...")
+		o.BroadcastStop()
+		grpcServer.GracefulStop()
+		log.Println("Orchestrator shut down gracefully.")
+		return nil
+	case err := <-errCh:
+		return fmt.Errorf("server error: %w", err)
 	}
-
-	return nil
 }

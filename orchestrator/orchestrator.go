@@ -34,7 +34,6 @@ type Orchestrator struct {
 	workerMap map[string]*w.Worker
 
 	streamMu sync.Mutex
-	// workerStreams map[string]pb.Controller_ControlChannelServer
 }
 
 func New(metaJsonPath string) (*Orchestrator, error) {
@@ -57,7 +56,7 @@ func New(metaJsonPath string) (*Orchestrator, error) {
 
 	o := &Orchestrator{
 		workerMap: workerMap,
-		stopCh:    make(chan struct{}),
+		stopCh:    nil,
 		readyCh:   make(chan struct{}),
 	}
 
@@ -106,6 +105,12 @@ func (o *Orchestrator) ControlChannel(stream pb.Controller_ControlChannelServer)
 	workerId := firstMsg.WorkerId
 
 	o.streamMu.Lock()
+
+	// Initialize stop channel if not already
+	if o.stopCh == nil {
+		o.stopCh = make(chan struct{})
+	}
+
 	thisWorker := o.workerMap[workerId]
 	thisWorker.Connect(stream)
 	log.Printf("Worker %s connected to control channel", workerId)
@@ -130,7 +135,7 @@ func (o *Orchestrator) ControlChannel(stream pb.Controller_ControlChannelServer)
 
 		stopWorkerNum := 0
 		for _, worker := range o.workerMap {
-			if worker.Status == pb.WorkerStatus_WS_STOP {
+			if worker.Connecting == false {
 				stopWorkerNum++
 			}
 		}
@@ -147,7 +152,7 @@ func (o *Orchestrator) ControlChannel(stream pb.Controller_ControlChannelServer)
 			return err
 		}
 		o.streamMu.Lock()
-		o.workerMap[msg.WorkerId].HandleMessage(msg)
+		o.workerMap[msg.WorkerId].HandleStreamMessage(msg)
 		o.streamMu.Unlock()
 	}
 }
@@ -155,7 +160,7 @@ func (o *Orchestrator) ControlChannel(stream pb.Controller_ControlChannelServer)
 func (o *Orchestrator) triggerPreprocessing() {
 	// Wait for all workers to be ready
 	<-o.readyCh
-	log.Printf("Well, let's go!")
+	log.Printf("All workers are ready. Well, let's go!")
 
 	// Send running signal to all preprocessors
 	o.streamMu.Lock()
@@ -180,8 +185,10 @@ func (o *Orchestrator) BroadcastStop() {
 	o.streamMu.Unlock()
 
 	// Wait for all workers to stop
-	<-o.stopCh
-	log.Printf("All workers have stopped.")
+	if o.stopCh != nil {
+		<-o.stopCh
+		log.Printf("All workers have stopped.")
+	}
 }
 
 func (o *Orchestrator) Start(socketPath string) error {

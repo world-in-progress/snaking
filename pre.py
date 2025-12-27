@@ -3,7 +3,7 @@ os.environ['WORKER_ID'] = 'preprocessor-001'
 import time
 import logging
 import fastdb4py as fdb
-from python.snaking.src.snaking import Snaking, ROLE_PREPROCESSOR
+from python.snaking.src.snaking import Snaking, Role
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -12,14 +12,8 @@ class Point(fdb.Feature):
     y: fdb.F64
     z: fdb.F64
 
-if __name__ == '__main__':
-    snaking = Snaking('preprocessor-001', ROLE_PREPROCESSOR)
-    
-    snaking.register()
-    
-    snaking.keep_on()
-    
-    time.sleep(5)  # simulate some preprocessing work
+def main():
+    time.sleep(3)  # simulate some preprocessing work
     db_path = './points.fdb'
     db = fdb.ORM.truncate([
         fdb.TableDefn(Point, 100, 'points')
@@ -42,4 +36,7 @@ if __name__ == '__main__':
         p = ps[i]
         logging.info(f"Point {i}: x={p.x}, y={p.y}, z={p.z}")
     
-    snaking.complete()
+if __name__ == '__main__':
+    snaking = Snaking('preprocessor-001', Role.PREPROCESSOR)
+    snaking.set_once(main)
+    snaking.run()

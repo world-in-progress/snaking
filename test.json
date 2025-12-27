@@ -3,6 +3,28 @@
         {
             "id": "preprocessor-001",
             "role": "preprocessor"
+        },
+        {
+            "id": "preprocessor-002",
+            "role": "preprocessor"
+        },
+        {
+            "id": "preprocessor-003",
+            "role": "preprocessor"
+        }
+    ],
+    "preprocessing-dags": [
+        {
+            "id": "preprocessor-001",
+            "depends-on": []
+        },
+        {
+            "id": "preprocessor-002",
+            "depends-on": ["preprocessor-001"]
+        },
+        {
+            "id": "preprocessor-003",
+            "depends-on": ["preprocessor-001"]
         }
     ]
 }

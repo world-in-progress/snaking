@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"fmt"
 	pb "snaking/internal/proto"
 )
 
@@ -45,6 +46,10 @@ func (w *Worker) changeRemoteStatus(newStatus pb.WorkerStatus) error {
 		return nil
 	}
 
+	if w.stream == nil {
+		return fmt.Errorf("worker not connected")
+	}
+
 	cmd := &pb.OrchestratorStreamMessage{
 		Type:   pb.OrchestratorStreamMessageType_OSM_COMMAND,
 		Status: newStatus,
@@ -71,10 +76,15 @@ func (w *Worker) Run() error {
 }
 
 func (w *Worker) Stop() error {
+	// Avoid sending stop command if not connected
+	if w.stream == nil {
+		w.Status = pb.WorkerStatus_WS_STOP
+		return nil
+	}
 	return w.changeRemoteStatus(pb.WorkerStatus_WS_STOP)
 }
 
-func (w *Worker) HandleMessage(msg *pb.WorkerStreamMessage) {
+func (w *Worker) HandleStreamMessage(msg *pb.WorkerStreamMessage) {
 	switch msg.Type {
 	case pb.WorkerStreamMessageType_WSM_REPORTSTATUS:
 		if statusMsg, ok := msg.Payload.(*pb.WorkerStreamMessage_Status); ok {

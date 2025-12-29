@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	pb "snaking/internal/proto"
+	"snaking/orchestrator/dag"
 	w "snaking/orchestrator/worker"
 	"sync"
 	"syscall"
@@ -17,7 +18,8 @@ import (
 )
 
 type MetaInfo struct {
-	Workers []w.WorkerInfo `json:"workers"`
+	Workers []w.WorkerInfo   `json:"workers"`
+	PreDag  []dag.Dependency `json:"preprocessing-dag"`
 }
 
 type WorkerStatus struct {
@@ -32,6 +34,7 @@ type Orchestrator struct {
 	stopCh    chan struct{}
 	readyCh   chan struct{}
 	workerMap map[string]*w.Worker
+	preDag    *dag.Dag
 
 	streamMu sync.Mutex
 }
@@ -56,6 +59,7 @@ func New(metaJsonPath string) (*Orchestrator, error) {
 
 	o := &Orchestrator{
 		workerMap: workerMap,
+		preDag:    dag.New(metaInfo.PreDag, workerMap),
 		stopCh:    nil,
 		readyCh:   make(chan struct{}),
 	}
@@ -166,12 +170,8 @@ func (o *Orchestrator) triggerPreprocessing() {
 	o.streamMu.Lock()
 	defer o.streamMu.Unlock()
 
-	for _, worker := range o.workerMap {
-		if worker.Role == pb.WorkerRole_WR_PREPROCESSOR {
-			if err := worker.Run(); err != nil {
-				log.Printf("Error sending preprocessing command to %s: %v", worker.Id, err)
-			}
-		}
+	if err := o.preDag.Run(); err != nil {
+		log.Fatalf("Error running preprocessing DAG: %v", err)
 	}
 }
 

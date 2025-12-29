@@ -1,5 +1,3 @@
-import os
-os.environ['WORKER_ID'] = 'preprocessor-001'
 import time
 import logging
 import fastdb4py as fdb
@@ -16,23 +14,23 @@ def main():
     time.sleep(3)  # simulate some preprocessing work
     db_path = './points.fdb'
     db = fdb.ORM.truncate([
-        fdb.TableDefn(Point, 100, 'points')
+        fdb.TableDefn(Point, 99, 'points')
     ])
     
     ps = db[Point]['points']
     
-    for i in range(100):
+    for i in range(99):
         p = ps[i]
         p.x = float(i)
-        p.y = float(i) * 2.0
-        p.z = float(i) * 3.0
+        p.y = float(i)
+        p.z = float(i)
     db.save(db_path)
 
     logging.info(f"Database saved at {db_path}")
     db = fdb.ORM.load(db_path, from_file=True)
     ps = db[Point]['points']
     
-    for i in range(100):
+    for i in range(99):
         p = ps[i]
         logging.info(f"Point {i}: x={p.x}, y={p.y}, z={p.z}")
     

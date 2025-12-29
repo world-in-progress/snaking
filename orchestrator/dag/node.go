@@ -1,6 +1,7 @@
 package dag
 
 import (
+	pb "snaking/internal/proto"
 	w "snaking/orchestrator/worker"
 )
 
@@ -10,7 +11,7 @@ type Node struct {
 	ExistingDependencyNum int
 }
 
-func NewWorkerTrigger(worker *w.Worker, deps []*w.Worker) *Node {
+func NewNode(worker *w.Worker, deps []*w.Worker) *Node {
 	return &Node{
 		Worker:                worker,
 		CurrentDependency:     deps,
@@ -18,25 +19,34 @@ func NewWorkerTrigger(worker *w.Worker, deps []*w.Worker) *Node {
 	}
 }
 
-func (wt *Node) Update(currentRunningWorkerIds []string) {
-	if wt.ExistingDependencyNum == 0 {
+func (n *Node) Finished() bool {
+	return n.Worker.Status == pb.WorkerStatus_WS_COMPLETED
+}
+
+func (n *Node) Ready() bool {
+	return n.ExistingDependencyNum == 0
+}
+
+func (n *Node) Update(completedWorkerId string) {
+	if n.ExistingDependencyNum == -1 {
+		// already triggered
 		return
 	}
 
-	for _, workerId := range currentRunningWorkerIds {
-		// Check if the workerId is in CurrentDependency
-		// If found, move it to the last position and reduce ExistingDependencyNum
-		for i := 0; i < wt.ExistingDependencyNum; i++ {
-			if wt.CurrentDependency[i].Id == workerId {
-				// Swap the found dependency with the one at ExistingDependencyNum - 1
-				wt.CurrentDependency[i], wt.CurrentDependency[wt.ExistingDependencyNum-1] = wt.CurrentDependency[wt.ExistingDependencyNum-1], wt.CurrentDependency[i]
-				wt.ExistingDependencyNum--
-				break
-			}
+	// Check if the completedWorkerId is in CurrentDependency
+	// If found, move it to the last position and reduce ExistingDependencyNum
+	for i := 0; i < n.ExistingDependencyNum; i++ {
+		if n.CurrentDependency[i].Id == completedWorkerId {
+			// Swap the found dependency with the one at ExistingDependencyNum - 1
+			n.CurrentDependency[i], n.CurrentDependency[n.ExistingDependencyNum-1] = n.CurrentDependency[n.ExistingDependencyNum-1], n.CurrentDependency[i]
+			n.ExistingDependencyNum--
+			break
 		}
 	}
-}
 
-func (wt *Node) Tick() {
-
+	// If all dependencies are resolved, trigger the worker
+	if n.ExistingDependencyNum == 0 {
+		n.Worker.Run()
+		n.ExistingDependencyNum = -1 // mark as triggered
+	}
 }

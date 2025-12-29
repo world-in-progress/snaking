@@ -13,7 +13,7 @@
             "role": "preprocessor"
         }
     ],
-    "preprocessing-dags": [
+    "preprocessing-dag": [
         {
             "id": "preprocessor-001",
             "depends-on": []

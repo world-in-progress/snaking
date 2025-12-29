@@ -18,6 +18,10 @@ func getRoleEnum(role string) pb.WorkerRole {
 	}
 }
 
+type TaskTrigger interface {
+	NotifyTaskStatus(id string, status pb.WorkerStatus)
+}
+
 type WorkerInfo struct {
 	Id   string `json:"id"`
 	Role string `json:"role"`
@@ -29,7 +33,8 @@ type Worker struct {
 	Status     pb.WorkerStatus
 	Connecting bool
 
-	stream pb.Controller_ControlChannelServer
+	trigger TaskTrigger
+	stream  pb.Controller_ControlChannelServer
 }
 
 func New(info *WorkerInfo) *Worker {
@@ -38,7 +43,13 @@ func New(info *WorkerInfo) *Worker {
 		Role:       getRoleEnum(info.Role),
 		Status:     pb.WorkerStatus_WS_IDLE,
 		Connecting: false,
+		trigger:    nil,
+		stream:     nil,
 	}
+}
+
+func (w *Worker) SetTrigger(trigger TaskTrigger) {
+	w.trigger = trigger
 }
 
 func (w *Worker) changeRemoteStatus(newStatus pb.WorkerStatus) error {
@@ -91,6 +102,9 @@ func (w *Worker) HandleStreamMessage(msg *pb.WorkerStreamMessage) {
 			switch statusMsg.Status {
 			case pb.WorkerStatus_WS_COMPLETED:
 				w.Status = pb.WorkerStatus_WS_COMPLETED
+				if w.trigger != nil {
+					w.trigger.NotifyTaskStatus(w.Id, pb.WorkerStatus_WS_COMPLETED)
+				}
 			}
 
 		}

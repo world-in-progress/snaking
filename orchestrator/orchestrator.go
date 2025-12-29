@@ -34,7 +34,7 @@ type Orchestrator struct {
 	stopCh    chan struct{}
 	readyCh   chan struct{}
 	workerMap map[string]*w.Worker
-	preDag    *dag.Dag
+	PreDag    *dag.Dag
 
 	streamMu sync.Mutex
 }
@@ -59,7 +59,7 @@ func New(metaJsonPath string) (*Orchestrator, error) {
 
 	o := &Orchestrator{
 		workerMap: workerMap,
-		preDag:    dag.New(metaInfo.PreDag, workerMap),
+		PreDag:    dag.New(metaInfo.PreDag, workerMap),
 		stopCh:    nil,
 		readyCh:   make(chan struct{}),
 	}
@@ -170,7 +170,7 @@ func (o *Orchestrator) triggerPreprocessing() {
 	o.streamMu.Lock()
 	defer o.streamMu.Unlock()
 
-	if err := o.preDag.Run(); err != nil {
+	if err := o.PreDag.Run(); err != nil {
 		log.Fatalf("Error running preprocessing DAG: %v", err)
 	}
 }

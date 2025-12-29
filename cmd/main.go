@@ -80,6 +80,16 @@ func main() {
 	// }
 
 	server, _ := orchestrator.New("./test.json")
+	// pd := server.PreDag.Dependencies
+	// sc := dag.NewScheduler(pd)
+	// for _, r := range sc.Relations {
+	// 	println("Executor:", r.ExecutorId)
+	// 	println(" Having dependents:", len(r.Dependents))
+	// 	for _, dep := range r.Dependents {
+	// 		println("  Dependent:", dep)
+	// 	}
+	// }
+
 	server.Start("/tmp/controller.sock")
 
 	// select {}

@@ -1,62 +1,123 @@
 package dag
 
-type Executor interface {
-	GetID() string
-	Execute()
-}
+import (
+	"context"
+	"fmt"
+	"log"
+)
 
-type BackwardRelation struct {
-	ExecutorId string
-	Dependents []string
+type EventType int
+
+const (
+	EventTaskCompleted EventType = iota
+	EventTaskFailed
+)
+
+type TaskEvent struct {
+	WorkerId string
+	Type     EventType
 }
 
 type Scheduler struct {
-	// TODO(Dsssyc): A bug over here
-	Relations map[string]BackwardRelation
+	AdjacencyMap map[string][]string
 
-	inDegrees    map[string]int32
-	executors    map[string]Executor
-	standbyQueue []string
+	inDegrees  map[string]int
+	readyQueue []string
 
-	eventCh chan struct{}
-	stopCh  chan struct{}
+	startCh chan string
+	eventCh chan TaskEvent
 }
 
-// func NewScheduler(deps []Dependency, executors map[string]Executor) *Scheduler {
 func NewScheduler(deps []Dependency) *Scheduler {
-	inDegrees := make(map[string]int32)
-	brs := make(map[string]BackwardRelation)
+	inDegrees := make(map[string]int)
+	adjacencyMap := make(map[string][]string)
 
 	// First pass: discover all executors
+	readyQueue := make([]string, 0)
 	for _, d := range deps {
-		brs[d.Id] = BackwardRelation{
-			ExecutorId: d.Id,
-			Dependents: make([]string, 0),
-		}
-		inDegrees[d.Id] = 0
-	}
+		// Initialize in-degrees
+		inDegrees[d.Id] = len(d.DependsOn)
 
-	// Second pass: build backward relations
-	for _, d := range deps {
+		// Build adjacency map
+		adjacencyMap[d.Id] = make([]string, 0)
 		for _, depId := range d.DependsOn {
-			dps := brs[depId].Dependents
-			dps = append(dps, d.Id)
+			adjacencyMap[depId] = append(adjacencyMap[depId], d.Id)
 		}
-	}
 
-	// Third pass: calculate in-degrees
-	for _, d := range deps {
-		br := brs[d.Id]
-		inDegrees[d.Id] = int32(len(br.Dependents))
+		// If in-degree is zero, add to ready queue
+		if inDegrees[d.Id] == 0 {
+			readyQueue = append(readyQueue, d.Id)
+		}
 	}
 
 	return &Scheduler{
-		// executors:    executors,
-		inDegrees:    inDegrees,
-		Relations:    brs,
-		standbyQueue: []string{},
+		AdjacencyMap: adjacencyMap,
 
-		eventCh: make(chan struct{}, 1),
-		stopCh:  make(chan struct{}),
+		inDegrees:  inDegrees,
+		readyQueue: readyQueue,
+		startCh:    make(chan string),
+		eventCh:    make(chan TaskEvent),
+	}
+}
+
+func (s *Scheduler) flushReadyQueue() {
+	for _, id := range s.readyQueue {
+		go func(workerId string) {
+			s.startCh <- workerId
+		}(id)
+	}
+	// Reset ready queue
+	s.readyQueue = make([]string, 0)
+}
+
+func (s *Scheduler) allFinished() bool {
+	// TODO (Dsssyc): optimize this check, especially for how to check completion efficiently
+	for _, degree := range s.inDegrees {
+		if degree > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Scheduler) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	s.flushReadyQueue()
+
+	for {
+		select {
+		case event := <-s.eventCh:
+			switch event.Type {
+			case EventTaskCompleted:
+				{
+					// Kahn's algorithm step: reduce in-degrees of next nodes
+					nexts := s.AdjacencyMap[event.WorkerId]
+					for _, nextId := range nexts {
+						s.inDegrees[nextId]--
+						if s.inDegrees[nextId] == 0 {
+							s.readyQueue = append(s.readyQueue, nextId)
+						}
+					}
+
+					if s.allFinished() {
+						return nil
+					}
+
+					s.flushReadyQueue()
+				}
+			case EventTaskFailed:
+				{
+					// TODO (Dsssyc): handle task failure
+					cancel()
+					log.Printf("Task failed, cancelling DAG")
+					return fmt.Errorf("task %s failed", event.WorkerId)
+				}
+			}
+		case <-ctx.Done():
+			log.Printf("Dag stopped: %v", ctx.Err())
+			return nil
+		}
 	}
 }

@@ -22,7 +22,7 @@ message RegisterInfo {
 }
 
 message RegisteredMessage {
-    bool success = 1;
+    string arg_descriptions = 1;
 }
 
 enum WorkerRole {
@@ -49,21 +49,31 @@ enum WorkerStreamMessageType {
 message WorkerStreamMessage {
     string worker_id = 1;
     WorkerStreamMessageType type = 2;
-    oneof payload {
-        WorkerStatus status = 3;
+    oneof content {
+        WorkerStatus status = 3; 
         int32 current_step = 4;
     }
+    string payload = 5;
 }
 
 enum OrchestratorStreamMessageType {
     OSM_UNKNOWN = 0;
-    OSM_ACKNOWLEDGE = 1;
-    OSM_COMMAND = 2;
+    OSM_COMMAND = 1;
+}
+
+enum WorkerCommand {
+    WC_START = 0;
+    WC_PAUSE = 1;
+    WC_PROCEED = 2;
+    WC_STOP = 3;
 }
 
 message OrchestratorStreamMessage {
     OrchestratorStreamMessageType type = 1;
-    WorkerStatus status = 2;
+    oneof content {
+        WorkerCommand cmd = 2;
+    }
+    string payload = 3;
 }
 
 message ErrorMessage {

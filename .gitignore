@@ -39,5 +39,5 @@ devcontainer.json
 
 # Testing files
 *.fdb
-
+__pycache__
 pre

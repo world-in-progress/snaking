@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"encoding/json"
 	"fmt"
 	pb "snaking/internal/proto"
 )
@@ -22,9 +23,16 @@ type TaskTrigger interface {
 	NotifyTaskStatus(id string, status pb.WorkerStatus)
 }
 
+type ArgFromWorkerOutput struct {
+	Name        string `json:"name"`
+	WorkerId    string `json:"worker-id"`
+	OutputField string `json:"output-field"`
+}
+
 type WorkerInfo struct {
-	Id   string `json:"id"`
-	Role string `json:"role"`
+	Id   string            `json:"id"`
+	Role string            `json:"role"`
+	Args []json.RawMessage `json:"args"`
 }
 
 type Worker struct {
@@ -32,6 +40,7 @@ type Worker struct {
 	Role       pb.WorkerRole
 	Status     pb.WorkerStatus
 	Connecting bool
+	Args       []json.RawMessage
 
 	trigger TaskTrigger
 	stream  pb.Controller_ControlChannelServer
@@ -43,6 +52,7 @@ func New(info *WorkerInfo) *Worker {
 		Role:       getRoleEnum(info.Role),
 		Status:     pb.WorkerStatus_WS_IDLE,
 		Connecting: false,
+		Args:       info.Args,
 		trigger:    nil,
 		stream:     nil,
 	}
@@ -52,23 +62,35 @@ func (w *Worker) SetTrigger(trigger TaskTrigger) {
 	w.trigger = trigger
 }
 
-func (w *Worker) changeRemoteStatus(newStatus pb.WorkerStatus) error {
-	if w.Status == newStatus {
-		return nil
+func (w *Worker) GetArgDescriptions() string {
+	descriptions := struct {
+		Args []json.RawMessage `json:"args"`
+	}{
+		Args: w.Args,
 	}
+	bytes, err := json.Marshal(descriptions)
+	if err != nil {
+		return ""
+	}
+	return string(bytes)
+}
 
+func (w *Worker) sendCommand(command pb.WorkerCommand, payload string) error {
 	if w.stream == nil {
 		return fmt.Errorf("worker not connected")
 	}
 
 	cmd := &pb.OrchestratorStreamMessage{
-		Type:   pb.OrchestratorStreamMessageType_OSM_COMMAND,
-		Status: newStatus,
+		Type: pb.OrchestratorStreamMessageType_OSM_COMMAND,
+		Content: &pb.OrchestratorStreamMessage_Cmd{
+			Cmd: command,
+		},
+		Payload: payload,
 	}
+
 	if err := w.stream.Send(cmd); err != nil {
 		return err
 	}
-	w.Status = newStatus
 	return nil
 }
 
@@ -82,8 +104,12 @@ func (w *Worker) Disconnect() {
 	w.Connecting = false
 }
 
-func (w *Worker) Run() error {
-	return w.changeRemoteStatus(pb.WorkerStatus_WS_RUNNING)
+func (w *Worker) Run(dependencies map[string]string) error {
+	bytes, err := json.Marshal(dependencies)
+	if err != nil {
+		return fmt.Errorf("failed to marshal dependencies: %w", err)
+	}
+	return w.sendCommand(pb.WorkerCommand_WC_START, string(bytes))
 }
 
 func (w *Worker) Stop() error {
@@ -92,21 +118,5 @@ func (w *Worker) Stop() error {
 		w.Status = pb.WorkerStatus_WS_STOP
 		return nil
 	}
-	return w.changeRemoteStatus(pb.WorkerStatus_WS_STOP)
-}
-
-func (w *Worker) HandleStreamMessage(msg *pb.WorkerStreamMessage) {
-	switch msg.Type {
-	case pb.WorkerStreamMessageType_WSM_REPORTSTATUS:
-		if statusMsg, ok := msg.Payload.(*pb.WorkerStreamMessage_Status); ok {
-			switch statusMsg.Status {
-			case pb.WorkerStatus_WS_COMPLETED:
-				w.Status = pb.WorkerStatus_WS_COMPLETED
-				if w.trigger != nil {
-					w.trigger.NotifyTaskStatus(w.Id, pb.WorkerStatus_WS_COMPLETED)
-				}
-			}
-
-		}
-	}
+	return w.sendCommand(pb.WorkerCommand_WC_STOP, "")
 }

@@ -17,9 +17,14 @@ import (
 	"google.golang.org/grpc"
 )
 
+const (
+	RoleSolver        string = "solver"
+	RolePreprocessor  string = "preprocessor"
+	RolePostprocessor string = "postprocessor"
+)
+
 type MetaInfo struct {
-	Workers []w.WorkerInfo   `json:"workers"`
-	PreDag  []dag.Dependency `json:"preprocessing-dag"`
+	Workers []w.WorkerInfo `json:"workers"`
 }
 
 type WorkerStatus struct {
@@ -30,13 +35,43 @@ type WorkerStatus struct {
 
 type Orchestrator struct {
 	pb.UnimplementedControllerServer
-	workerMu  sync.Mutex
-	stopCh    chan struct{}
-	readyCh   chan struct{}
 	workerMap map[string]*w.Worker
-	PreDag    *dag.Dag
+
+	preDag *dag.Scheduler
+
+	activeEventCh chan<- *pb.WorkerStreamMessage
+
+	workerMu sync.Mutex
+	stopCh   chan struct{}
+	readyCh  chan struct{}
+	stopSig  chan os.Signal
 
 	streamMu sync.Mutex
+}
+
+type ArgFromWorkerOutput struct {
+	Name        string `json:"name"`
+	WorkerId    string `json:"worker-id"`
+	OutputField string `json:"output-field"`
+}
+
+func getDependentWorkerIds(args []json.RawMessage) ([]string, error) {
+	var deps []string
+	for _, arg := range args {
+		var argInfo map[string]any
+		if err := json.Unmarshal(arg, &argInfo); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal worker arg: %w", err)
+		}
+
+		if argInfo["type"] == "from-worker-output" {
+			var outputArg ArgFromWorkerOutput
+			if err := json.Unmarshal(arg, &outputArg); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal ArgFromWorkerOutput: %w", err)
+			}
+			deps = append(deps, outputArg.WorkerId)
+		}
+	}
+	return deps, nil
 }
 
 func New(metaJsonPath string) (*Orchestrator, error) {
@@ -52,15 +87,29 @@ func New(metaJsonPath string) (*Orchestrator, error) {
 		return nil, err
 	}
 
+	var preDagDeps []dag.Dependency
 	var workerMap = make(map[string]*w.Worker)
 	for _, workerInfo := range metaInfo.Workers {
 		workerMap[workerInfo.Id] = w.New(&workerInfo)
+
+		// Build dependencies for preprocessors
+		if workerInfo.Role == RolePreprocessor {
+			deps, err := getDependentWorkerIds(workerInfo.Args)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get dependencies for worker %s: %w", workerInfo.Id, err)
+			}
+			preDagDeps = append(preDagDeps, dag.Dependency{
+				Id:        workerInfo.Id,
+				DependsOn: deps,
+			})
+		}
 	}
 
 	o := &Orchestrator{
 		workerMap: workerMap,
-		PreDag:    dag.New(metaInfo.PreDag, workerMap),
+		preDag:    dag.NewScheduler(preDagDeps),
 		stopCh:    nil,
+		stopSig:   make(chan os.Signal, 1),
 		readyCh:   make(chan struct{}),
 	}
 
@@ -77,7 +126,7 @@ func (o *Orchestrator) Register(ctx context.Context, in *pb.RegisterInfo) (*pb.R
 	if _, exists := o.workerMap[workerId]; !exists {
 		o.workerMu.Unlock()
 		log.Printf("Unknown worker %s tried to register", workerId)
-		return &pb.RegisteredMessage{Success: false}, nil
+		return &pb.RegisteredMessage{ArgDescriptions: ""}, nil
 	}
 
 	// Validate worker connection status
@@ -85,18 +134,18 @@ func (o *Orchestrator) Register(ctx context.Context, in *pb.RegisterInfo) (*pb.R
 	if worker.Connecting {
 		o.workerMu.Unlock()
 		log.Printf("Worker %s already registered", workerId)
-		return &pb.RegisteredMessage{Success: false}, nil
+		return &pb.RegisteredMessage{ArgDescriptions: ""}, nil
 	}
 
 	// Validate worker role
 	if worker.Role != workerRole {
 		o.workerMu.Unlock()
 		log.Printf("Worker %s role mismatch: expected %v, got %v", workerId, worker.Role, workerRole)
-		return &pb.RegisteredMessage{Success: false}, nil
+		return &pb.RegisteredMessage{ArgDescriptions: ""}, nil
 	}
 
 	o.workerMu.Unlock()
-	return &pb.RegisteredMessage{Success: true}, nil
+	return &pb.RegisteredMessage{ArgDescriptions: worker.GetArgDescriptions()}, nil
 }
 
 // GRPC Methods
@@ -155,10 +204,54 @@ func (o *Orchestrator) ControlChannel(stream pb.Controller_ControlChannelServer)
 		if err != nil {
 			return err
 		}
+
 		o.streamMu.Lock()
-		o.workerMap[msg.WorkerId].HandleStreamMessage(msg)
+		if o.activeEventCh != nil {
+			select {
+			case o.activeEventCh <- msg:
+			default:
+				log.Printf("Dropping event from worker %s due to full channel", msg.WorkerId)
+			}
+		}
 		o.streamMu.Unlock()
 	}
+}
+
+func (o *Orchestrator) runDag(ctx context.Context, dag *dag.Scheduler) {
+	for {
+		select {
+		case startEvent := <-dag.StartCh:
+			worker, exists := o.workerMap[startEvent.WorkerId]
+			if !exists {
+				log.Printf("Worker %s not found for starting task", startEvent.WorkerId)
+				continue
+			}
+
+			if err := worker.Run(startEvent.Payloads); err != nil {
+				log.Printf("Error starting task on worker %s: %v", startEvent.WorkerId, err)
+			}
+		case <-dag.DoneCh:
+			log.Printf("DAG execution completed.")
+			return
+		case <-ctx.Done():
+			log.Printf("Dag stopped: %v", ctx.Err())
+			return
+		}
+	}
+}
+
+func (o *Orchestrator) Run(ctx context.Context) error {
+	o.streamMu.Lock()
+	o.activeEventCh = o.preDag.EventCh
+	o.streamMu.Unlock()
+
+	go o.runDag(ctx, o.preDag)
+
+	log.Printf("Starting preprocessing DAG...")
+	if err := o.preDag.Run(ctx); err != nil {
+		return fmt.Errorf("preprocessing failed: %w", err)
+	}
+	return nil
 }
 
 func (o *Orchestrator) triggerPreprocessing() {
@@ -166,13 +259,20 @@ func (o *Orchestrator) triggerPreprocessing() {
 	<-o.readyCh
 	log.Printf("All workers are ready. Well, let's go!")
 
-	// Send running signal to all preprocessors
-	o.streamMu.Lock()
-	defer o.streamMu.Unlock()
-
-	if err := o.PreDag.Run(); err != nil {
-		log.Fatalf("Error running preprocessing DAG: %v", err)
+	ctx := context.Background()
+	if err := o.Run(ctx); err != nil {
+		log.Printf("Error running preprocessing DAG: %v", err)
+		o.stopSig <- os.Interrupt
+		return
 	}
+
+	// Send running signal to all preprocessors
+	// o.streamMu.Lock()
+	// defer o.streamMu.Unlock()
+
+	// if err := o.PreDag.Run(); err != nil {
+	// 	log.Fatalf("Error running preprocessing DAG: %v", err)
+	// }
 }
 
 func (o *Orchestrator) BroadcastStop() {
@@ -225,7 +325,14 @@ func (o *Orchestrator) Start(socketPath string) error {
 		grpcServer.GracefulStop()
 		log.Println("Orchestrator shut down gracefully.")
 		return nil
+	case <-o.stopSig:
+		log.Println("Received stop signal from orchestrator...")
+		o.BroadcastStop()
+		grpcServer.GracefulStop()
+		log.Println("Orchestrator shut down gracefully.")
+		return nil
 	case err := <-errCh:
+		log.Println("Received error from GRPC server...")
 		return fmt.Errorf("server error: %w", err)
 	}
 }

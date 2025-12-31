@@ -2,7 +2,6 @@ package main
 
 import (
 	"snaking/orchestrator"
-	"snaking/orchestrator/dag"
 )
 
 // type FdbOp string
@@ -81,15 +80,6 @@ func main() {
 	// }
 
 	server, _ := orchestrator.New("./test.json")
-	pd := server.PreDag.Dependencies
-	sc := dag.NewScheduler(pd)
-	for id, adj := range sc.AdjacencyMap {
-		println("Executor:", id)
-		for _, dep := range adj {
-			println("  Dependent:", dep)
-		}
-	}
-
 	server.Start("/tmp/controller.sock")
 
 	// select {}

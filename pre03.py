@@ -1,7 +1,8 @@
 import time
 import logging
 import fastdb4py as fdb
-from python.snaking.src.snaking import Snaking, Role
+from pydantic import BaseModel
+from python.snaking.src.snaking import Snaking, Role, FdbShmName
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -10,16 +11,19 @@ class Point(fdb.Feature):
     y: fdb.F64
     z: fdb.F64
 
-def main():
+class InputModel(BaseModel):
+    shm_name: FdbShmName
+
+def main(input_data: InputModel):
     time.sleep(3)  # simulate some preprocessing work
-    db_path = './points.fdb'
-    db = fdb.ORM.load(db_path, from_file=True)
+    db = fdb.ORM.load(input_data.shm_name)
     ps = db[Point]['points']
     for i in range(99):
         p = ps[i]
         logging.info(f"Point {i}: x={p.x}, y={p.y}, z={p.z}")
     
 if __name__ == '__main__':
-    snaking = Snaking('preprocessor-003', Role.PREPROCESSOR)
+    snaking = Snaking('preprocessor-002', Role.PREPROCESSOR)
     snaking.set_once(main)
+    snaking.set_in(InputModel)
     snaking.run()

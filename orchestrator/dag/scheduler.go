@@ -4,36 +4,55 @@ import (
 	"context"
 	"fmt"
 	"log"
+	pb "snaking/internal/proto"
 )
 
 type EventType int
+
+type Dependency struct {
+	Id        string   `json:"id"`
+	DependsOn []string `json:"depends-on"`
+}
 
 const (
 	EventTaskCompleted EventType = iota
 	EventTaskFailed
 )
 
-type TaskEvent struct {
+type RunningEvent struct {
 	WorkerId string
-	Type     EventType
+	LunchStr string
 }
 
+type StartEvent struct {
+	WorkerId string
+	Payloads map[string]string
+}
 type Scheduler struct {
-	AdjacencyMap map[string][]string
+	adjacencyMap  map[string][]string
+	dependencyMap map[string][]string
 
-	inDegrees  map[string]int
-	readyQueue []string
+	inDegrees       map[string]int
+	readyQueue      []StartEvent
+	CompletionInfos map[string]string // workerId -> completion payload
 
-	startCh chan string
-	eventCh chan TaskEvent
+	StartCh chan StartEvent
+	DoneCh  chan struct{}
+	EventCh chan *pb.WorkerStreamMessage
 }
 
 func NewScheduler(deps []Dependency) *Scheduler {
 	inDegrees := make(map[string]int)
 	adjacencyMap := make(map[string][]string)
+	dependencyMap := make(map[string][]string)
 
-	// First pass: discover all executors
-	readyQueue := make([]string, 0)
+	// Make dependency map from deps
+	for _, d := range deps {
+		dependencyMap[d.Id] = d.DependsOn
+	}
+
+	// Build in-degrees and adjacency map
+	readyQueue := make([]StartEvent, 0)
 	for _, d := range deps {
 		// Initialize in-degrees
 		inDegrees[d.Id] = len(d.DependsOn)
@@ -46,38 +65,34 @@ func NewScheduler(deps []Dependency) *Scheduler {
 
 		// If in-degree is zero, add to ready queue
 		if inDegrees[d.Id] == 0 {
-			readyQueue = append(readyQueue, d.Id)
+			readyQueue = append(readyQueue, StartEvent{WorkerId: d.Id, Payloads: make(map[string]string)})
 		}
 	}
 
 	return &Scheduler{
-		AdjacencyMap: adjacencyMap,
+		adjacencyMap:  adjacencyMap,
+		dependencyMap: dependencyMap,
 
-		inDegrees:  inDegrees,
-		readyQueue: readyQueue,
-		startCh:    make(chan string),
-		eventCh:    make(chan TaskEvent),
+		inDegrees:       inDegrees,
+		readyQueue:      readyQueue,
+		CompletionInfos: make(map[string]string),
+		StartCh:         make(chan StartEvent),
+		EventCh:         make(chan *pb.WorkerStreamMessage),
 	}
 }
 
 func (s *Scheduler) flushReadyQueue() {
-	for _, id := range s.readyQueue {
-		go func(workerId string) {
-			s.startCh <- workerId
-		}(id)
+	for _, event := range s.readyQueue {
+		go func(event StartEvent) {
+			s.StartCh <- event
+		}(event)
 	}
 	// Reset ready queue
-	s.readyQueue = make([]string, 0)
+	s.readyQueue = make([]StartEvent, 0)
 }
 
 func (s *Scheduler) allFinished() bool {
-	// TODO (Dsssyc): optimize this check, especially for how to check completion efficiently
-	for _, degree := range s.inDegrees {
-		if degree > 0 {
-			return false
-		}
-	}
-	return true
+	return len(s.CompletionInfos) == len(s.inDegrees)
 }
 
 func (s *Scheduler) Run(ctx context.Context) error {
@@ -88,36 +103,59 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 	for {
 		select {
-		case event := <-s.eventCh:
-			switch event.Type {
-			case EventTaskCompleted:
-				{
-					// Kahn's algorithm step: reduce in-degrees of next nodes
-					nexts := s.AdjacencyMap[event.WorkerId]
-					for _, nextId := range nexts {
-						s.inDegrees[nextId]--
-						if s.inDegrees[nextId] == 0 {
-							s.readyQueue = append(s.readyQueue, nextId)
-						}
-					}
-
-					if s.allFinished() {
-						return nil
-					}
-
-					s.flushReadyQueue()
-				}
-			case EventTaskFailed:
-				{
-					// TODO (Dsssyc): handle task failure
-					cancel()
-					log.Printf("Task failed, cancelling DAG")
-					return fmt.Errorf("task %s failed", event.WorkerId)
-				}
-			}
 		case <-ctx.Done():
 			log.Printf("Dag stopped: %v", ctx.Err())
 			return nil
+		case msg := <-s.EventCh:
+			workerId := msg.WorkerId
+			switch msg.Type {
+			case pb.WorkerStreamMessageType_WSM_REPORTSTATUS:
+				workerMsg, _ := msg.Content.(*pb.WorkerStreamMessage_Status)
+				switch workerMsg.Status {
+				case pb.WorkerStatus_WS_COMPLETED:
+					{
+						// Mark worker as finished
+						s.CompletionInfos[workerId] = msg.Payload
+
+						// Kahn's algorithm step: reduce in-degrees of next nodes
+						nexts := s.adjacencyMap[workerId]
+						for _, nextId := range nexts {
+							s.inDegrees[nextId]--
+							if s.inDegrees[nextId] == 0 {
+								// Build start event with payloads from dependencies
+								startEvent := StartEvent{
+									WorkerId: nextId,
+									Payloads: make(map[string]string),
+								}
+								for _, depId := range s.dependencyMap[nextId] {
+									startEvent.Payloads[depId] = s.CompletionInfos[depId]
+								}
+
+								// Add to ready queue
+								s.readyQueue = append(s.readyQueue, startEvent)
+							}
+						}
+
+						if s.allFinished() {
+							log.Printf("All tasks completed successfully")
+							return nil
+						}
+
+						s.flushReadyQueue()
+					}
+				case pb.WorkerStatus_WS_FAILED:
+					{
+						// TODO (Dsssyc): handle task failure
+						cancel()
+						log.Printf("Task failed, cancelling DAG")
+						return fmt.Errorf("task %s failed with message: %s", workerId, msg.Payload)
+					}
+				}
+			case pb.WorkerStreamMessageType_WSM_REPORTSTEP:
+				{
+					// TODO (Dsssyc): handle step report
+				}
+			}
 		}
 	}
 }

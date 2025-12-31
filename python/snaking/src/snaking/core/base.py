@@ -16,6 +16,7 @@ from ..proto import snaking_pb2_grpc as pb_grpc
 
 logger = logging.getLogger(__name__)
 WS = pb.WorkerStatus
+WC = pb.WorkerCommand
 WSMT = pb.WorkerStreamMessageType
 OSMT = pb.OrchestratorStreamMessageType
 
@@ -51,15 +52,12 @@ class BasicHost:
         self._channel: grpc.Channel = grpc.insecure_channel(SERVER_ADDRESS)
         self._stub: pb_grpc.ControllerStub = pb_grpc.ControllerStub(self._channel)
         self._control_stream = None
+        self._received_payload: str = ''
+        self._args = None
         
         self._stop = False
         self._proceed = threading.Event()
         self._send_queue: queue.Queue[pb.WorkerStreamMessage] = queue.Queue()
-    
-    def keep_on(self):
-        if not self._proceed.is_set() and not self._stop:
-            logger.debug('Worker is set to keep on, proceeding.')
-            self._proceed.wait()
     
     def register(self):
         start_time = time.time()
@@ -68,12 +66,10 @@ class BasicHost:
                 raise TimeoutError(f'Registration timed out after {REGISTER_TIMEOUT} seconds')
             try:
                 req = pb.RegisterInfo(worker_id=self._id, role=self._role)
-                res = self._stub.Register(req, timeout=REGISTER_TIMEOUT)
-                if res.success:
-                    logger.info(f'Worker ({self._id}) registered successfully.')
-                    threading.Thread(target=_control_stream_loop, args=(self,), daemon=True).start()
-                else:
-                    raise RuntimeError(f'Registration failed: {res.message}')
+                res: pb.RegisteredMessage = self._stub.Register(req, timeout=REGISTER_TIMEOUT)
+                self._args = res.arg_descriptions
+                logger.info(f'Worker ({self._id}) registered successfully.')
+                threading.Thread(target=_control_stream_loop, args=(self,), daemon=True).start()
             except grpc.RpcError as e:
                 if e.code() == grpc.StatusCode.UNAVAILABLE:
                     logger.debug('Orchestrator not available, retrying...')
@@ -84,11 +80,26 @@ class BasicHost:
                 raise e
             break
     
-    def complete(self):
+    def report_error(self, error_msg: str):
         self._send_queue.put(pb.WorkerStreamMessage(
             worker_id=self._id,
             type=WSMT.WSM_REPORTSTATUS,
-            status=WS.WS_COMPLETED
+            status=WS.WS_FAILED,
+            payload=error_msg
+        ))
+        logger.error(f'Worker ({self._id}) reported error: {error_msg}')
+        if self._proceed.is_set():
+            self._proceed.clear()
+        self._proceed.wait()
+    
+    def complete(self, out_payload: str = ''):
+        if self._stop:
+            return
+        self._send_queue.put(pb.WorkerStreamMessage(
+            worker_id=self._id,
+            type=WSMT.WSM_REPORTSTATUS,
+            status=WS.WS_COMPLETED,
+            payload=out_payload
         ))
         if self._proceed.is_set():
             self._proceed.clear()
@@ -101,6 +112,19 @@ class BasicHost:
         if self._control_stream:
             self._control_stream.cancel()
         self._proceed.set()
+    
+    @property
+    def keep_on(self) -> bool:
+        if self._stop:
+            if self._control_stream:
+                self._control_stream.cancel()
+            self._proceed.set()
+            return False
+        else:
+            if not self._proceed.is_set():
+                logger.debug('Worker is waiting for proceeding...')
+                self._proceed.wait()
+            return True
     
     def stream_controller(self):
         yield pb.WorkerStreamMessage(
@@ -122,86 +146,18 @@ class BasicHost:
         """Handle messages from the orchestrator."""
         type = msg.type
         if type == OSMT.OSM_COMMAND:
-            status = msg.status
-            if status == WS.WS_RUNNING:
+            cmd = msg.cmd
+            if cmd == WC.WC_START:
                 if not self._proceed.is_set():
                     logger.debug('Received RUNNING command, proceeding.')
+                    if msg.payload:
+                        self._received_payload = msg.payload
                     self._proceed.set()
                 else:
                     logger.warning('Received RUNNING command while already running, skipping.')
-            if status == WS.WS_STOP:
-                self.stop()
+            if cmd == WC.WC_STOP:
+                self._stop = True
+                # Make sure to unblock any waiting operations
+                if not self._proceed.is_set():
+                    self._proceed.set()
                 logger.info(f'Received STOP command, stopping worker ({self._id}).')
-                    
-                    
-            
-                    
-    
-    # def send_request(self, msg_type: pb.WorkerStreamMessageType, payload: str = '') -> threading.Event:
-    #     """Send a message to the orchestrator via the control stream."""
-    #     m_id = uuid.uuid4().hex
-    #     m_event = threading.Event()
-    #     self._request_cache[m_id] = (m_event, None)
-    #     msg = pb.WorkerStreamMessage(worker_id=self._id, message_id=m_id, type=msg_type, payload=payload)
-        
-    #     self._req_queue.put(msg)
-    #     return m_event
-    
-    # def connect(self):
-    #     # Start control stream thread
-    #     threading.Thread(target=_control_stream_loop, args=(self,), daemon=True).start()
-        
-    #     start_time = time.time()
-    #     while True:
-    #         if REGISTER_TIMEOUT is not None and time.time() - start_time > REGISTER_TIMEOUT:
-    #             raise TimeoutError(f'Connection timed out after {REGISTER_TIMEOUT} seconds')
-            
-    #         try:
-    #             self._request_cache = {} # reset request cache
-    #             self._req_queue = queue.Queue() # reset request queue
-    #             self._control_stream = self._stub.ControlChannel(self._stream_controller())
-                
-    #             # Register worker self
-    #             if not self.send_request(WSMT.WSM_REGISTER).wait(timeout=REGISTER_TIMEOUT):
-    #                 raise TimeoutError('Registration acknowledgment not received in time')
-    #             error = self._request_cache.get(self._id, (None, None))[1]
-    #             if error:
-    #                 raise error
-    #         except grpc.RpcError as e:
-    #             if e.code() == grpc.StatusCode.UNAVAILABLE:
-    #                 logger.debug('Orchestrator not available, retrying...')
-    #                 time.sleep(1.0)
-    #                 continue
-    #             else:
-    #                 raise e
-    #         except Exception as e:
-    #             logger.error(f'Unexpected error during connect: {e}')
-    #             raise e
-    
-    # def _stream_controller(self, heartbeat_interval: float = 3.0):
-    #     m_id: str
-    #     last_heartbeat = time.time()
-    #     while not self._stop:
-    #         m_id = ''
-    #         try:
-    #             # Check for messages in the queue (non-blocking)
-    #             try:
-    #                 # Wait for a message or timeout to send heartbeat
-    #                 timeout = max(0, heartbeat_interval - (time.time() - last_heartbeat))
-    #                 msg = self._req_queue.get(timeout=timeout)
-    #                 m_id = msg.message_id
-    #                 yield msg
-    #                 self._req_queue.task_done()
-    #             except queue.Empty:
-    #                 # Timeout reached, time to send heartbeat
-    #                 pass
-
-    #             # Send heartbeat if interval passed
-    #             if time.time() - last_heartbeat >= heartbeat_interval:
-    #                 yield pb.WorkerStreamMessage(worker_id=self._id, type=WSMT.WSM_HEARTBEAT)
-    #                 last_heartbeat = time.time()
-                    
-    #         except Exception as e:
-    #             if m_id and m_id in self._request_cache:
-    #                 self._request_cache[m_id][1] = e
-    #                 self._request_cache[m_id][0].set()
